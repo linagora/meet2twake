@@ -443,7 +443,7 @@ func saveContent(instance, token, filename string, startedAt *time.Time, content
 	return nil
 }
 
-const meetingsDirName = "Meetings"
+const meetingsDirName = "Reunions"
 
 func ensureMeetingDirectory(instance, token, dirname string) (string, error) {
 	meetingsDirID, err := ensureDirectory(instance, token, "/"+meetingsDirName, "io.cozy.files.root-dir", true)
