@@ -36,6 +36,7 @@ var mailFrom, mailSMTP string
 var mailPort int
 var mailTLSPolicy mail.TLSPolicy
 var aiClient *openaigo.Client
+var aiModel string
 
 func main() {
 	debug := false
@@ -100,12 +101,15 @@ func main() {
 		}
 	}
 
-	aiClient = openaigo.NewClient(os.Getenv("AI_API_KEY"))
-	baseURL := "https://chat.lucie.ovh.linagora.com/"
-	if u := os.Getenv("AI_BASE_URL"); u != "" {
-		baseURL = u
+	aiAPIKey := os.Getenv("AI_API_KEY")
+	aiBaseURL := os.Getenv("AI_BASE_URL")
+	aiModel = os.Getenv("AI_MODEL")
+	if aiAPIKey == "" || aiBaseURL == "" || aiModel == "" {
+		slog.Error("AI_API_KEY, AI_BASE_URL and AI_MODEL must be defined")
+		os.Exit(1)
 	}
-	aiClient.BaseURL = baseURL
+	aiClient = openaigo.NewClient(aiAPIKey)
+	aiClient.BaseURL = aiBaseURL
 
 	prepareMinIOClient(debug)
 
@@ -250,20 +254,28 @@ func minioHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	roomID, startedAt, err := getRoomIDAndStartedAt(webhook.Key)
+	_, startedAt, err := getRoomIDAndStartedAt(webhook.Key)
 	if err != nil {
 		sendError(http.StatusInternalServerError, res, err)
 		return
 	}
 
-	sub, email, err := getSubFromRoomID(*roomID)
+	key := strings.TrimSuffix(webhook.Key, ".json")
+	recordingIDStr := strings.SplitN(filepath.Base(key), ".", 2)[0]
+	recordingID, err := uuid.FromString(recordingIDStr)
+	if err != nil {
+		sendError(http.StatusInternalServerError, res, fmt.Errorf("invalid recording UUID: %w", err))
+		return
+	}
+
+	sub, email, err := getSubFromRecordingID(recordingID)
 	if err != nil {
 		sendError(http.StatusInternalServerError, res, err)
 		return
 	}
 
 	if email == "" {
-		slog.Warn("No email found for user", "sub", sub, "roomID", roomID.String())
+		slog.Warn("No email found for user", "sub", sub, "recordingID", recordingID.String())
 	}
 
 	instance, err := findInstanceBySub(sub)
@@ -277,8 +289,6 @@ func minioHandler(res http.ResponseWriter, req *http.Request) {
 		sendError(http.StatusInternalServerError, res, err)
 		return
 	}
-
-	key := strings.TrimSuffix(webhook.Key, ".json")
 	content, err := getFromMinIO(key)
 	if err != nil {
 		sendError(http.StatusInternalServerError, res, err)
@@ -359,9 +369,9 @@ func getFromMinIO(key string) (*minio.Object, error) {
 const query = `
 SELECT u.sub, u.email
 FROM meet_user u
-JOIN meet_resource_access ra ON u.id = ra.user_id
-WHERE ra.resource_id = $1
-ORDER BY ra.created_at;
+JOIN meet_recording_access ra ON u.id = ra.user_id
+WHERE ra.recording_id = $1
+  AND ra.role = 'owner';
 `
 
 func getPostgresURL() string {
@@ -397,7 +407,7 @@ func getPostgresURL() string {
 		userEncoded, passwordEncoded, host, port, database, sslmode)
 }
 
-func getSubFromRoomID(roomID uuid.UUID) (string, string, error) {
+func getSubFromRecordingID(recordingID uuid.UUID) (string, string, error) {
 	ctx := context.Background()
 	config, err := pgxpool.ParseConfig(getPostgresURL())
 	if err != nil {
@@ -417,7 +427,7 @@ func getSubFromRoomID(roomID uuid.UUID) (string, string, error) {
 
 	var sub string
 	var email *string
-	err = conn.QueryRow(context.Background(), query, roomID).Scan(&sub, &email)
+	err = conn.QueryRow(context.Background(), query, recordingID).Scan(&sub, &email)
 	if err != nil {
 		return "", "", fmt.Errorf("Cannot query: %s", err)
 	}
@@ -427,8 +437,8 @@ func getSubFromRoomID(roomID uuid.UUID) (string, string, error) {
 		emailValue = *email
 	}
 
-	slog.Debug("getSubFromRoomID",
-		"roomID", roomID.String(),
+	slog.Debug("getSubFromRecordingID",
+		"recordingID", recordingID.String(),
 		"sub", sub,
 		"email", emailValue)
 	return sub, emailValue, nil
@@ -730,12 +740,8 @@ Tu es un agent dont le rôle est de créer un TL;DR (résumé très concis) d'un
 `
 
 func generateSummary(content string) (string, error) {
-	model := "gpt-oss-120b"
-	if m := os.Getenv("AI_MODEL"); m != "" {
-		model = m
-	}
 	request := openaigo.ChatRequest{
-		Model: model,
+		Model: aiModel,
 		Messages: []openaigo.Message{
 			{Role: "system", Content: promptTLDR},
 			{Role: "user", Content: content},
