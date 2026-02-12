@@ -36,6 +36,7 @@ var mailFrom, mailSMTP string
 var mailPort int
 var mailTLSPolicy mail.TLSPolicy
 var aiClient *openaigo.Client
+var aiModel string
 
 func main() {
 	debug := false
@@ -100,12 +101,15 @@ func main() {
 		}
 	}
 
-	aiClient = openaigo.NewClient(os.Getenv("AI_API_KEY"))
-	baseURL := "https://chat.lucie.ovh.linagora.com/"
-	if u := os.Getenv("AI_BASE_URL"); u != "" {
-		baseURL = u
+	aiAPIKey := os.Getenv("AI_API_KEY")
+	aiBaseURL := os.Getenv("AI_BASE_URL")
+	aiModel = os.Getenv("AI_MODEL")
+	if aiAPIKey == "" || aiBaseURL == "" || aiModel == "" {
+		slog.Error("AI_API_KEY, AI_BASE_URL and AI_MODEL must be defined")
+		os.Exit(1)
 	}
-	aiClient.BaseURL = baseURL
+	aiClient = openaigo.NewClient(aiAPIKey)
+	aiClient.BaseURL = aiBaseURL
 
 	prepareMinIOClient(debug)
 
@@ -736,12 +740,8 @@ Tu es un agent dont le rôle est de créer un TL;DR (résumé très concis) d'un
 `
 
 func generateSummary(content string) (string, error) {
-	model := "gpt-oss-120b"
-	if m := os.Getenv("AI_MODEL"); m != "" {
-		model = m
-	}
 	request := openaigo.ChatRequest{
-		Model: model,
+		Model: aiModel,
 		Messages: []openaigo.Message{
 			{Role: "system", Content: promptTLDR},
 			{Role: "user", Content: content},
